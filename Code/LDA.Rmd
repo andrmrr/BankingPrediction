@@ -1,0 +1,216 @@
+---
+title: "LDA"
+author: "Andreja Andrejic"
+date: "2023-12-05"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(MASS)
+library(bestNormalize)
+library(ROSE)
+library(MVN)
+library(mda)
+library(biotools)
+setwd("/Users/aki/Projects/MVA/LDA")
+
+df <- read.table("bank_after_cleaning.csv", sep=",", header = T, row.names = 1, stringsAsFactors = TRUE)
+names(df)
+str(df)
+summary(df)
+```
+
+Scaling the data of numerical variables
+```{r}
+standardize <- function(variables)
+{
+  # take only numerical variables
+  variables <- as.data.frame(variables)
+  column.classes = lapply(variables, class)
+  numerical = column.classes != "factor"
+  numerical.names = names(variables)[numerical]
+  variables <- variables[numerical]
+  # find out how many variables we have
+  numvariables <- length(variables)
+  # find the variable names
+  variablenames <- colnames(variables)
+  # calculate the group-standardised version of each variable
+  for (i in 1:numvariables)
+  {
+    variablei <- variables[i]
+    variablei_name <- variablenames[i]
+    
+    bn <- bestNormalize(variables[i][[1]])
+    variable_norm <- predict(bn)
+    
+    data_length <- nrow(variablei)
+    if (i == 1) { variables_norm <- data.frame(row.names=seq(1,data_length)) }
+    variables_norm[`variablei_name`] <- variable_norm
+  }
+  return(variables_norm)
+}
+
+df_norm <- standardize(df)
+df_norm[7] = df[16]
+```
+
+
+Splitting data into training and test 80-20 and balancing the train data using ROSE function
+```{r}
+set.seed(123)
+training <- sample(x = nrow(df_norm), size = nrow(df_norm)*0.8, replace = FALSE)
+# Training dataset
+train <- df_norm[training,]
+# Test dataset
+test <- df_norm[-training,]
+summary(train)
+
+
+table(train$y)
+train.rose <- ROSE(y ~ ., data = train, seed = 17)$data
+#train.rose <- ovun.sample(y ~ ., data = train, method = "under", N = 850, seed = 17)$data
+table(train.rose$y)
+```
+
+Applying the LDA
+```{r}
+#LDA
+train.lda <- lda(train.rose$y~., data = train.rose)
+train.lda
+train.lda$scaling[,1]
+
+#MDA
+# model <- mda(train.rose$y~., data = train.rose)
+# model
+
+train.lda.values <- predict(train.lda, test[1:6])
+summary(train.lda.values)
+# $x are the LDA values, $posterior is the probability of each group, $class is in which class does this row fall in (yes or no)
+# train.lda.values$x
+# train.lda.values$class
+# train.lda.values$posterior
+
+```
+
+LDA using rules/histogram
+```{r}
+hist(train.lda.values$x[,1])
+# multiple histogram between the Discriminant function and the output feature
+par("mar")
+par(mar=c(1,1,1,1))
+par(mar=c(5.1,4.1,4.1,2.1))
+par(mar=c(3,2.5,1.5,1))
+
+# Find the medians of train.lda.values$x when y=yes and when y=no and draw a 
+# vertical line at the mean of those two. That's the discriminant
+
+xval_truval <- cbind(train.lda.values$x, test$y)
+summary(xval_truval)
+xval_truval[, 2]
+tt <- xval_truval[xval_truval[, 2] == 1, ]; tt
+print("Median when y=no")
+median1 <- median(xval_truval[xval_truval[, 2] == 1, 1]); median1
+print("Median when y=no")
+median2 <- median(xval_truval[xval_truval[, 2] == 2, 1]); median2
+
+# This is the rule. Anything less than separator is classified as 1 and the rest as 2
+print("Rule (mean of the 2 medians)")
+separator <- (median1 + median2)/2; separator
+?ldahist
+ldahist(data = train.lda.values$x, g=test$y, ymax=1, xlim=c(-4,6))
+abline(v = separator, col="red", lwd=2, lty=2) # This doesn't work!! Ask David about this
+# It should create a vertical line (rule) that separates the two groups
+?abline
+
+#Classify the data
+xval_truval <- as.data.frame(xval_truval)
+n<-dim(xval_truval)[1]
+for(i in 1:n){
+  if(xval_truval[i,1]<separator){
+    xval_truval[i,3]<-1
+  } else{
+    xval_truval[i,3]<-2
+  }
+}
+
+table(xval_truval[,2])
+MC<-table(xval_truval[,2], xval_truval[,3])
+MC
+
+#accuracy
+accuracy<-sum(diag(MC))/dim(xval_truval)[1]
+accuracypercent<-100*accuracy
+accuracypercent
+#missclassification rate
+MR<-1-accuracy
+MR
+MRpercent<-100*MR
+MRpercent
+
+#Using rules, we get accuracy of 76.4%
+
+```
+
+Checking the 3 conditions for probability prediction
+```{r}
+# Checking the univariate distribution
+par(mfrow=c(2, 3))
+for(i in 1:6){
+  shapiro_test_result <- shapiro.test(test[,i])
+  print(colnames(test)[i])
+  print(shapiro_test_result)
+  hist(test[,i], xlab=colnames(train.rose)[i])
+  ?hist
+}
+par(mfrow=c(1,1))
+# Age, balance and duration are normally distributed, day, campaign and previous are not
+
+
+# Checking for Multivariate Gaussian Conditions (Royston test and/or Henze-Zirkler test)
+royston_test <- mvn(data = test[, 1:6], mvnTest = "royston", multivariatePlot = "qq")
+royston_test$multivariateNormality
+hz_test <- mvn(data = test[, 1:6], mvnTest = "hz")
+hz_test$multivariateNormality
+# Data does not fulfill Mulivariate Normality
+
+# royston_test <- mvn(data = test[, c(1,2,4)], mvnTest = "royston", multivariatePlot = "qq")
+# royston_test$multivariateNormality
+# hz_test <- mvn(data = test[, c(1,2,4)], mvnTest = "hz")
+# hz_test$multivariateNormality
+
+
+# Covariance Conditions
+boxM(data = test[, 1:6], grouping = test[, 7])
+# Covariance is not equal between the yes and no groups 
+
+#boxM(data = test[, c(1,2,4)], grouping = test[, 7])
+
+```
+
+LDA using probability
+```{r}
+table(test[,7])
+MC<-table(test[,7], train.lda.values$class)
+MC
+
+#accuracy
+accuracy<-sum(diag(MC))/dim(test)[1]
+accuracypercent<-100*accuracy
+accuracypercent
+#missclassification rate
+MR<-1-accuracy
+MRpercent<-100*MR
+MRpercent
+
+# Our accuracy is 75%
+```
+
+Loadings
+```{r}
+# We talk about which numerical variables are the most important.
+train.lda$scaling[,1]
+# These coefficients represent how much each variable influences the prediction.
+# First is duration, then age, previous, balance, campaign and the last is day
+```

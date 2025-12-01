@@ -1,0 +1,182 @@
+---
+title: "Cluster and Profile"
+author: "BANKING"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(fig.width = 10, fig.height = 6)
+rm(list=ls())
+
+# LOAD LIBRARIES HERE
+library(dplyr)
+library(cluster)
+
+# SET WORKING DIRECTORY
+path <- dirname(rstudioapi::getSourceEditorContext()$path)
+setwd(path)
+```
+
+```{r, echo=FALSE}
+## Load Bank information and display basic information
+dd <- read.csv("bank_after_cleaning.csv", header = T, row.names = 1, stringsAsFactors = TRUE)
+dd$month <- factor(dd$month, levels = c("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"))
+
+## Variable divisions
+column.classes = lapply(dd, class)
+
+# Division by class
+categorical = column.classes == "factor"
+categorical.names = names(dd)[categorical]
+
+numerical = !categorical
+numerical.names = names(dd)[numerical]
+
+# Division by purpose
+response.name = "y"
+response = names(dd) == response.name
+
+explanatory = names(dd) != response.name
+explanatory.name = names(dd)[explanatory]
+
+names(dd)
+```
+
+## Clustering
+
+```{r}
+actives<-c(which(explanatory))
+dissimMatrix <- daisy(dd[,actives], metric = "gower", stand=TRUE)
+
+distMatrix<-dissimMatrix^2
+
+h1 <- hclust(distMatrix,method="ward.D")  # NOTICE THE COST
+#versions noves "ward.D" i abans de plot: par(mar=rep(2,4)) si se quejara de los margenes del plot
+
+plot(h1)
+hline_height <- 20
+abline(h = hline_height, col = "red", lty = 2)
+
+cluster <- cutree(h1,5)
+
+#class sizes 
+table(cluster)
+```
+
+## Profiling
+
+```{r}
+## Set working path to this file's path (RStudio necessary)
+path = dirname(rstudioapi::getSourceEditorContext()$path)
+setwd(path)
+
+#Calculates the test values of the Xnum variable for all modalities of the P factor
+ValorTestXnum <- function(Xnum,P){
+  #freq dis of fac
+  nk <- as.vector(table(P)); 
+  n <- sum(nk); 
+  #means x groups
+  xk <- tapply(Xnum,P,mean);
+  #importance of numerical variable test
+  txk <- (xk-mean(Xnum))/(sd(Xnum)*sqrt((n-nk)/(n*nk))); 
+  #p-values
+  pxk <- pt(txk,n-1,lower.tail=F);
+  for(c in 1:length(levels(as.factor(P)))){if (pxk[c]>0.5){pxk[c]<-1-pxk[c]}}
+  return (pxk)
+}
+
+
+
+
+ValorTestXquali <- function(P,Xquali){
+  taula <- table(P,Xquali);
+  n <- sum(taula); 
+  pk <- apply(taula,1,sum)/n;
+  pj <- apply(taula,2,sum)/n;
+  pf <- taula/(n*pk);
+  pjm <- matrix(data=pj,nrow=dim(pf)[1],ncol=dim(pf)[2], byrow=TRUE);      
+  dpf <- pf - pjm; 
+  #importance of categorial variable test
+  dvt <- sqrt(((1-pk)/(n*pk))%*%t(pj*(1-pj))); 
+  #and there are divisions equal to 0 woman NA and it does not work
+  zkj <- dpf
+  zkj[dpf!=0]<-dpf[dpf!=0]/dvt[dpf!=0]; 
+  pzkj <- pnorm(zkj,lower.tail=F);
+  for(c in 1:length(levels(as.factor(P)))){for (s in 1:length(levels(Xquali))){if (pzkj[c,s]> 0.5){pzkj[c,s]<-1- pzkj[c,s]}}}
+  return (list(rowpf=pf,vtest=zkj,pval=pzkj))
+}
+
+```
+
+```{r}
+dades<-dd
+K<-dim(dades)[2]
+
+P<-cluster
+nameP<-"Cluster"
+nc<-length(levels(factor(P)))
+paste(nc, nameP)
+pvalk <- matrix(data=0,nrow=nc,ncol=K, dimnames=list(levels(P),names(dades)))
+n<-dim(dades)[1]
+
+for(k in 1:K){
+  if (is.numeric(dades[,k])){ 
+    print(paste("Anàlisi per classes de la Variable:", names(dades)[k]))
+    
+    mean.k <- tapply(dades[,k], P, mean)
+    var.k <- tapply(dades[,k], P, var)
+    barplot(mean.k)
+    points(c(mean.k + 1.96 * var.k), pch='-')
+    points(c(mean.k - 1.96 * var.k), pch='-')
+    abline(h=mean(dades[,k]))
+    
+    boxplot(dades[,k]~P, horizontal=TRUE,
+            main=paste("Boxplot of", names(dades)[k], "vs", nameP ))
+    
+    o<-oneway.test(dades[,k]~P)
+    print(paste("p-valueANOVA:", o$p.value))
+    kw<-kruskal.test(dades[,k]~P)
+    print(paste("p-value Kruskal-Wallis:", kw$p.value))
+    pvalk[,k]<-ValorTestXnum(dades[,k], P)
+    print("p-values ValorsTest: ")
+    print(pvalk[,k]) 
+  }else{
+    if(class(dd[,k])=="Date"){
+      print(summary(dd[,k]))
+      print(sd(dd[,k]))
+      #decide breaks: weeks, months, quarters...
+      hist(dd[,k],breaks="weeks")
+    }else{
+      print(paste("Variable", names(dades)[k]))
+      table<-table(P,dades[,k])
+      rowperc<-prop.table(table,1)
+      colperc<-prop.table(table,2)
+      
+      dades[,k]<-as.factor(dades[,k])
+      
+      table<-table(dades[,k],P)
+      
+      #diagrames de barres
+      paleta<-rainbow(length(levels(dades[,k])))
+      barplot(table(dades[,k], as.factor(P)) / rep(as.vector(table(as.factor(P))), each=length(levels(dades[,k]))),
+              beside=TRUE,col=paleta, main=names(dd)[k])
+      legend("topright",levels(as.factor(dades[,k])),pch=1,cex=0.5, col=paleta)
+      
+      print("Test Chi quadrat: ")
+      print(chisq.test(dades[,k], as.factor(P)), digits=3)
+      
+      print("valorsTest:")
+      print(lapply(ValorTestXquali(P,dades[,k]), . %>% ifelse(. > 0.05, NA, .))$pval, digits=3)
+    }
+  }
+}
+#descriptors of the most significant classes.
+for (c in 1:length(levels(as.factor(P)))) {
+  if(!is.na(levels(as.factor(P))[c])){
+    print(paste("P.values per class:",levels(as.factor(P))[c]));
+    print(sort(pvalk[c,]), digits=3) 
+  }
+}
+```

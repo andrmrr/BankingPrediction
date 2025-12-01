@@ -1,0 +1,308 @@
+---
+title: "arules"
+output: html_document
+date: "2023-11-07"
+---
+
+Read the cleaned dataset
+```{r}
+library(arules)
+library("arulesViz")
+df <- read.table("bank_after_cleaning.csv",header=T, sep=",");
+df <- subset(df, select = -1)
+head(df)
+summary(df)
+```
+
+Keep only categorical columns and convert them to factors
+```{r}
+for(i in c(2,3,4,5,7,8,9,11,16,15)) df[,i]<-as.factor(df[,i])
+dcat<-df[,sapply(df, is.factor)]
+head(dcat)
+summary(dcat)
+```
+Now convert to a transaction dataset. Count the number of levels (unique categories) in each factor variable and then sum them. 
+```{r}
+dtrans<-as(dcat, "transactions")
+foo<-function(x){length(levels(x))}
+sum(sapply(dcat, foo))
+dtrans
+inspect(head(dtrans,10))
+summary(dtrans)  # EXPLAIN THIS RESULT IN THE DOCUMENT
+dim(dtrans)
+```
+```{r}
+itemFrequencyPlot(dtrans, support=0.3, cex.names = 1)
+```
+Do the apriori with specific support and confidence.
+```{r}
+rulesDtrans <- apriori(dtrans, parameter = list(support = 0.3, confidence = 0.5,  minlen=2))
+summary(rulesDtrans)
+inspect(head(rulesDtrans,5))
+length(rulesDtrans)
+```
+Sort rules by lift. It is close to 1, we have to retry apriori with different parameters.
+```{r}
+inspect(head(rulesDtrans,n=3, by="lift"))
+```
+
+Function that check all the combinations of support and confidence from 0.1 to 1 while storing the lift value
+```{r}
+# Create an empty list to store lift values for different combinations
+lift_values <- list()
+
+# Define a sequence of support and confidence values from 0.1 to 1
+support_values <- seq(0.1, 1, by = 0.1)
+confidence_values <- seq(0.1, 1, by = 0.1)
+
+# Loop through the combinations
+for (support_threshold in support_values) {
+  for (confidence_threshold in confidence_values) {
+    # Run Apriori with the current support and confidence thresholds
+    rules <- apriori(dtrans, parameter = list(support = support_threshold, confidence = confidence_threshold, minlen = 2))
+    
+    # Calculate lift for each rule and store the maximum lift
+    max_lift <- max(rules@quality$lift)
+    
+    # Store the lift value for this combination in the list
+    lift_values[[paste("Support:", support_threshold, "Confidence:", confidence_threshold)]] <- max_lift
+  }
+}
+```
+Check only the rules that have lift value greater than 1.5
+```{r}
+# Print the lift values for different combinations
+for (combination in names(lift_values)) {
+  max_lift <- lift_values[[combination]]
+  if (max_lift >= 1.5) {
+    cat(combination, "=> Max Lift:", max_lift, "\n")
+  }
+}
+```
+There are just a few cases with lift greater than 1.8 and all of them are with support 0.1. Let's keep the one with the greater confidence, which is 0.8
+```{r}
+rules <- apriori(dtrans, parameter = list(support = 0.1, confidence = 0.8,  minlen=2))
+#inspect(rules)
+length(rules)
+```
+
+Now, delete redundant rules. From the rules remaining, only two have lift <1.8: {job=management}	=>	{education=tertiary} and {month=aug}	=>	{housing=no}
+```{r}
+
+subset.matrix <- is.subset(rules,rules,sparse = F)
+subset.matrix[lower.tri(subset.matrix,diag=T)] <- NA
+redundant <- colSums(subset.matrix,na.rm=T)>=1
+# which(redundant)
+
+#Removing redundant rules
+
+rules.pruned <- rules[!redundant]
+rules.pruned <- sort(rules.pruned,by="lift")
+inspect(rules.pruned)
+```
+Plot the rules by support, confidence and lift before and after pruning
+```{r}
+plot(rules, measure=c("support", "confidence"), shading="lift", interactive=FALSE)
+plot(rules.pruned, measure=c("support", "confidence"), shading="lift", interactive=FALSE)
+```
+```{r}
+management.rules <- sort(subset(rules.pruned, subset = lhs %in% "job=management"), by = "confidence")
+summary(management.rules)
+inspect(management.rules)
+plot(management.rules,  measure=c("support", "confidence"), shading="lift")
+plot(management.rules,method="graph",interactive=FALSE,shading="lift")
+```
+
+```{r}
+august.rules <- sort(subset(rules.pruned, subset = lhs %in% "month=aug"), by = "confidence")
+summary(august.rules)
+inspect(august.rules)
+plot(august.rules,  measure=c("support", "confidence"), shading="lift")
+plot(august.rules,method="graph",interactive=FALSE,shading="lift")
+```
+
+```{r}
+tertiary.rules <- sort(subset(rules.pruned, subset = rhs %in% "education=tertiary"), by = "confidence")
+summary(tertiary.rules)
+inspect(tertiary.rules)
+plot(tertiary.rules,  measure=c("support", "confidence"), shading="lift")
+plot(tertiary.rules,method="graph",interactive=FALSE,shading="lift")
+```
+
+```{r}
+no_housing.rules <- sort(subset(rules.pruned, subset = rhs %in% "housing=no"), by = "confidence")
+summary(no_housing.rules)
+inspect(no_housing.rules)
+plot(no_housing.rules,  measure=c("support", "confidence"), shading="lift")
+plot(no_housing.rules,method="graph",interactive=FALSE,shading="lift")
+
+
+
+```
+
+```{r}
+management.rules <- sort(subset(rules, subset = lhs %in% "job=management"), by = "confidence")
+plot(management.rules, method = "grouped", measure = "support", 
+     control = list(col = c("red", "blue", "green", "purple", "orange")))
+august.rules <- sort(subset(rules, subset = lhs %in% "month=aug"), by = "confidence")
+plot(august.rules, method = "grouped", measure = "support", 
+     control = list(col = c("red", "blue", "green", "purple", "orange")))
+tertiary.rules <- sort(subset(rules, subset = rhs %in% "education=tertiary"), by = "confidence")
+plot(tertiary.rules, method = "grouped", measure = "support", 
+     control = list(col = c("red", "blue", "green", "purple", "orange")))
+no_housing.rules <- sort(subset(rules, subset = rhs %in% "housing=no"), by = "confidence")
+plot(no_housing.rules, method = "grouped", measure = "support", 
+     control = list(col = c("red", "blue", "green", "purple", "orange")))
+
+```
+```{r}
+plot(management.rules, method="paracoord", control=list(reorder=TRUE))
+plot(tertiary.rules, method="paracoord", control=list(reorder=TRUE))
+plot(august.rules, method="paracoord", control=list(reorder=TRUE))
+plot(no_housing.rules, method="paracoord", control=list(reorder=TRUE))
+```
+
+Finding rules for y=yes values
+```{r}
+# Print the lift values for different combinations
+for (combination in names(lift_values)) {
+  max_lift <- lift_values[[combination]]
+  if (max_lift >= 1.5) {
+    cat(combination, "=> Max Lift:", max_lift, "\n")
+  }
+}
+confidencev <- 0.1
+all_yes_rules <- list() 
+while (confidencev <= 0.9) {
+  rules <- apriori(dtrans, parameter = list(support = 0.1, confidence = confidencev, minlen = 2)) 
+  rules.pruned <- rules[!redundant]
+  rules.pruned <- sort(rules.pruned,by="lift")
+  yes.rules <- sort(subset(rules.pruned, subset = rhs %in% "y=yes"), by = "confidence")
+  no.rules <- sort(subset(rules.pruned, subset = rhs %in% "y=no"), by = "confidence")
+
+  if (length(yes.rules) > 0) {
+    yes.rules <- sort(yes.rules, by = "confidence")
+    plot(yes.rules, measure = c("support", "confidence"), shading = "lift")
+    summary(yes.rules)
+    inspect(yes.rules)
+    all_yes_rules[[as.character(confidencev)]] <- yes.rules
+    } else {
+    cat("No rules found with confidence >", confidencev, "\n")
+  } 
+    
+    confidencev <- confidencev + 0.1
+}
+
+
+for (confidence_level in names(all_yes_rules)) {
+  cat("Rules for confidence level", confidence_level, ":\n")
+  inspect(all_yes_rules[[confidence_level]])
+}
+
+
+
+
+```
+
+Finding rules for y=no values
+```{r}
+confidencev <- 0.1
+all_no_rules <- list() 
+while (confidencev <= 0.8) {
+  rules <- apriori(dtrans, parameter = list(support = 0.1, confidence = confidencev, minlen = 2)) 
+  rules.pruned <- rules[!redundant]
+  rules.pruned <- sort(rules.pruned,by="lift")
+  no.rules <- sort(subset(rules.pruned, subset = rhs %in% "y=no"), by = "confidence")
+
+  if (length(no.rules) > 0) {
+    no.rules <- sort(no.rules, by = "confidence")
+    plot(no.rules, measure = c("support", "confidence"), shading = "lift")
+    summary(no.rules)
+    inspect(no.rules)
+    all_no_rules[[as.character(confidencev)]] <- no.rules
+    } else {
+    cat("No rules found with confidence >", confidencev, "\n")
+  } 
+    
+    confidencev <- confidencev + 0.1
+}
+
+
+for (confidence_level in names(all_no_rules)) {
+  cat("Rules for confidence level", confidence_level, ":\n")
+  inspect(all_no_rules[[confidence_level]])
+}
+
+
+```
+```{r}
+
+plot(no.rules, method = "grouped", measure = "support", 
+     control = list(col = c("red", "blue", "green", "purple", "orange")))
+plot(no.rules, method="paracoord", control=list(reorder=TRUE))
+
+```
+
+
+
+```{r}
+plot(no.rules, method="paracoord", control=list(reorder=TRUE))
+#ECLAT
+# Mine frequent itemsets with Eclat
+eclatDTrans <- eclat(dtrans, parameter = list(support = 0.2))
+
+# Perform rule induction
+eclatTransrules <- ruleInduction(eclatDTrans, dtrans, confidence = 0.8)
+
+subseteclat.matrix <- is.subset(eclatTransrules, sparse = FALSE)
+subseteclat.matrix[lower.tri(subseteclat.matrix, diag = TRUE)] <- NA
+redundanteclat <- colSums(subseteclat.matrix, na.rm = TRUE) >= 1
+
+# Removing redundant rules
+eclatTransrules.pruned <- eclatTransrules[!redundanteclat]
+
+# Sort rules by lift
+sorted_rules <- eclatTransrules.pruned[order(quality(eclatTransrules.pruned)$lift, decreasing = TRUE)][1:20]
+
+# Display the sorted rules
+inspect(sorted_rules)
+
+```
+
+
+
+```{r}
+#ECLAT
+# ECLAT
+# Mine frequent itemsets with Eclat
+eclatDTrans <- eclat(dtrans, parameter = list(support = 0.2))
+
+# Perform rule induction
+eclatTransrules <- ruleInduction(eclatDTrans, dtrans, confidence = 0.8)
+
+subseteclat.matrix <- is.subset(eclatTransrules, sparse = FALSE)
+subseteclat.matrix[lower.tri(subseteclat.matrix, diag = TRUE)] <- NA
+redundanteclat <- colSums(subseteclat.matrix, na.rm = TRUE) >= 1
+
+# Removing redundant rules
+eclatTransrules.pruned <- eclatTransrules[!redundanteclat]
+
+# Filter rules based on rhs containing "y=yes"
+filtered_rules <- subset(eclatTransrules.pruned, rhs %in% "y=no")
+
+# Sort rules by lift
+sorted_rules <- filtered_rules[order(quality(filtered_rules)$lift, decreasing = TRUE)]
+
+# Display the sorted rules
+inspect(sorted_rules)
+
+
+
+```
+```{r}
+
+
+plot(sorted_rules, method = "grouped", measure = "support", 
+     control = list(col = c("red", "blue", "green", "purple", "orange")))
+
+```

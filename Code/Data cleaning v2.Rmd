@@ -1,0 +1,585 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+
+
+
+Import all used libraries
+```{r}
+library(dplyr)
+library(plyr)
+library(naniar)
+library(tidyverse)
+library(ggplot2)
+library(mice)
+library(VIM)
+library(DMwR2)
+library(missForest)
+```
+
+Read dataset and attach to the dataframe
+```{r}
+df <- read.table("bank.csv",header=T, sep=";");
+attach(df)
+```
+
+Explore dataframe, dimensions, columns, rows
+```{r}
+names(df)
+class(df)
+dim(df)
+nrow(df)
+ncol(df)
+colnames(df)
+head(rownames(df))
+str(df)
+```
+Convert all categorical variables to factors
+```{r}
+for(i in c(2,3,4,5,7,8,9,11,16,17)) df[,i]<-as.factor(df[,i])
+```
+
+Convert unknown value and -1 value to NA
+```{r}
+missing_columns <- c(2, 4, 9, 16)  # categorical variables with missing
+
+# Loop through the columns and replace "unknown" with NA
+for (i in missing_columns) {
+  col_name <- names(df)[i]
+  levels(df[[col_name]]) <- c(levels(df[[col_name]]), "unknown")
+  df[[col_name]][df[[col_name]] == 'unknown'] <- NA
+  
+}
+
+# The only numeric variable that may has NAs is 'pdays' bec
+df$pdays[df$pdays == -1]  <- NA 
+# df[df$pdays == -1 & df$previous!=0,]
+```
+
+Find percentage of missings in dataframe, and percentages of missing per column
+```{r}
+missing_mean = mean(is.na(df)) ;missing_mean*100
+missing_columns = colMeans(is.na(df))*100 ;missing_columns
+```
+In the binary columns convert 'yes' and 'no' to 1 and 0.
+```{r}
+binary_columns <- c(5, 7, 8, 17)
+
+df <- df %>%
+  mutate_at(vars(binary_columns), ~ ifelse(. == "no", 0, 1))
+```
+
+Perform Little's test to test if values are missing completely at random
+```{r}
+nums <- unlist(lapply(df, is.numeric), use.names = FALSE)  
+df_nums <- df[ , nums] ;head(df_nums)
+
+mcar_test(df_nums)
+# The p-value is 0. That means that missings (of pdays) are not completely at random. Explore the missings
+```
+
+Store and print a dataframe with number and percentage of missing values in columns
+```{r}
+# Count missing values per variable
+missing_count_per_variable <- colSums(is.na(df))
+
+# Create a data frame to store the results
+missing_summary <- data.frame(
+  Variable = names(missing_count_per_variable),
+  Missing_Count = missing_count_per_variable,
+  Percentage = (missing_count_per_variable*100)/nrow(df)
+)
+
+# Rank variables by the number of missing values
+missing_summary <- missing_summary %>%
+  arrange(desc(Missing_Count))
+
+# Print or view the missing summary
+print(missing_summary)
+```
+
+Plot frequency of missings per column
+```{r}
+# Create a bar plot to visualize missing data patterns
+missing_data_plot <- ggplot(missing_data_summary, aes(x = key, y = missing_percentage)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(x = "Columns", y = "Proportion of Missing Values") +
+  ggtitle("Missing Data Patterns")
+
+print(missing_data_plot)
+```
+Plot frequency of missing values in rows. E.x. More than 2000 rows with at least 2 missing values
+```{r}
+df$missing_count <- rowSums(is.na(df))
+
+counts <- table(df$missing_count)
+barplot(counts, main="Missings per row",
+        xlab="Number of Missings", ylab='Frequency', col='red')
+```
+
+It is observed that pdays and poutcome have the same number of missing values. Check if they miss the same rows. After merging those two, we see that the number of rows with missings it is the same. So, we conclude that they miss values in exactly the same rows.
+```{r}
+# Create logical indicators for each column
+missing_col1 <- is.na(df$pdays)
+missing_col2 <- is.na(df$poutcome)
+
+# Check if both columns have missing values in the same rows
+both_missing_rows <- df[missing_col1 & missing_col2, ]
+nrow(both_missing_rows)
+```
+
+Patterns
+```{r}
+# The first row contains the variable names. Each other row represents a missing data pattern. 
+# The 1’s in each row indicate that the variable is complete and the 0’s indicate that the variable 
+# in that pattern contains missing values. The first column on the left (without a column name) 
+# shows the number of cases with a specific pattern and the column on the right shows the number of
+# variables that is incomplete in that pattern. The last row shows the total number of missing 
+# values for each variable.
+md.pattern(df)
+
+```
+
+```{r}
+aggr_plot <- aggr(df, col=c('yellow','brown'), numbers=TRUE, sortVars=TRUE, labels=names(df), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+
+```
+Due to domain knowledge we think there is high possibility that missings in 'job'(0.85%) and 'education'(4.13%) might exist out of intention of each person. Thus we decide to convert NAs back to 'unknown' for those two columns. So, now missing values exist in 3 columns (contact, pdays and poutcome)
+```{r}
+job_educ <- c(2, 4)  # categorical variables with missing
+
+# Loop through the columns and replace NA with "unknown" 
+for (i in job_educ) {
+  col_name <- names(df)[i]
+  levels(df[[col_name]]) <- c(levels(df[[col_name]]), NA)
+  df[[col_name]][is.na(df[[col_name]])] <- 'unknown'
+  
+}
+summary(df)
+```
+
+
+We have only ony numeric column that has missing values. That is 'pdays'. So we are going to impute those missing values with KNN, that only deals with numeric columns
+```{r}
+# df_nums was calculated before and it only contains the numeric columns
+df_imp_knn = knnImputation(df_nums, k=5)
+#Five is a moderate values of k and it considers a number of neighbors, which can help smooth out the imputed values and reduce the impact of outliers or noise. It is a good starting point
+summary(df_imp_knn)
+summary(df)
+
+mis_ind = rowSums(is.na(df))
+df[mis_ind>0,]
+df_imp_knn[mis_ind>0,]
+```
+
+```{r}
+set.seed(17)
+
+rf_imp <- missForest(df, variablewise=T, verbose=T) 
+summary(rf_imp)
+df_imp_rf <- rf_imp$ximp
+# df_rf<-data.frame(df$X,df_imp_rf)
+
+df[mis_ind>0,]
+df_imp_rf[mis_ind>0,]
+
+# pdays are imputed with decimals, while in KNN they were integers as they should
+```
+Use MIMMI to impute with necessary functions
+```{r}
+library(cluster)
+require(StatMatch)
+
+#assume missings represented with NA
+uncompleteVar<-function(vector){any(is.na(vector))}
+
+Mode <- function(x) 
+{
+  x<-as.factor(x)
+  maxV<-which.max(table(x))
+  return(levels(x)[maxV])
+}
+
+
+
+MiMMi <- function(data, priork=-1)
+{
+  #Identify columns without missings
+  colsMiss<-which(sapply(data, uncompleteVar))
+  if(length(colsMiss)==0){
+    print("Non missing values found")
+    out<-dd
+    }else{
+    K<-dim(data)[2]
+    colsNoMiss<-setdiff(c(1:K),as.vector(colsMiss))
+  
+    #cluster with complete data
+    dissimMatrix <- daisy(data[,colsNoMiss], metric = "gower", stand=TRUE)
+    distMatrix<-dissimMatrix^2
+  
+    hcdata<-hclust(distMatrix, method = "ward.D2")
+    plot(hcdata)
+    nk<-2
+    if(priork==-1){
+      print("WARNING: See the dendrogramm and ZOOM if required")
+      print("and enter a high number of clusters")
+      nk<-readline("(must be a positive integer). k: ")
+      nk<-as.integer(nk)
+    }else{nk<-priork}
+  
+    partition<-cutree(hcdata, nk)
+
+    CompleteData<-data
+    #nomes cal per tenir tra?a de com s'ha fet la substituci?
+    newCol<-K+1
+    CompleteData[,newCol]<-partition
+    names(CompleteData)[newCol]<-"ClassAux"
+  
+    setOfClasses<-as.numeric(levels(as.factor(partition)))
+    imputationTable<-data.frame(row.names=setOfClasses)
+    p<-1
+  
+    for(k in colsMiss)
+    {
+       #Files amb valors utils
+       rowsWithFullValues<-!is.na(CompleteData[,k])
+    
+       #calcular valors d'imputacio
+       if(is.numeric(CompleteData[,k]))
+       {
+          imputingValues<-aggregate(CompleteData[rowsWithFullValues,k], by=list(partition[rowsWithFullValues]), FUN=mean)
+       }else{
+          imputingValues<-aggregate(CompleteData[rowsWithFullValues,k], by=list(partition[rowsWithFullValues]), FUN=Mode)
+       }
+    
+       #Impute
+    
+       for(c in setOfClasses)
+       {
+          CompleteData[is.na(CompleteData[,k]) & partition==c,k]<-imputingValues[c,2]
+       }
+    
+       #Imputation Table
+       imputationTable[,p]<-imputingValues[,2]
+       names(imputationTable)[p]<-names(data)[k]
+       p<-p+1
+    }
+    
+    rownames(imputationTable)<-paste0("c", 1:nk)
+    out<-new.env()
+    out$imputedData<-CompleteData
+    out$imputation<-imputationTable
+  }
+  return(out)
+}
+
+#run MIMMI
+df_imp_mimmi<-MiMMi(df)
+
+#table of imputation values used
+df_imp_mimmi$imputation
+
+#imputed dataset
+df_imp_mimmi$imputedData
+
+summary(df_imp_mimmi$imputedData)
+```
+
+
+Impute missing values with mice and then plot original data and imputed data. We want to impute numeric and categorical data. So, MICE is appropriate along with pmm method.
+```{r}
+# set.seed(1234)
+mice.mod <- mice(df[, !names(df) %in% c("age", "job", "marital", "education", "default", "balance", "housing", "loan", "day", "month", "duration", "campaign", "y", "previous", "missing_count")], method = "pmm")
+mice.output <- complete(mice.mod) ;mice.output
+```
+
+```{r}
+par(mfrow = c(3,5))
+# Plot the distribution in the original data
+barplot(table(df$pdays), main = 'pdays: Original Data',
+        col = 'skyblue')
+# Plot the distribution  in the imputed data
+barplot(table(df_imp_knn$pdays), main = 'pdays: KNN imputation',
+        col = 'skyblue')
+barplot(table(df_imp_rf$pdays), main = 'pdays: Random Forest imputation',
+        col = 'skyblue')
+barplot(table(df_imp_mimmi$imputedData$pdays), main = 'pdays: MIMMI imputation',
+        col = 'skyblue')
+barplot(table(mice.output$pdays), main = 'pdays: MICE Imputation',
+        col = 'lightblue')
+
+# Plot the distribution in the original data
+
+barplot(table(df$poutcome), main = 'poutcome: Original Data',
+        col = 'skyblue')
+# Plot the distribution in the imputed data
+barplot(table(df_imp_rf$poutcome), main = 'poutcome: Random Forest imputation',
+        col = 'skyblue')
+barplot(table(df_imp_mimmi$imputedData$poutcome), main = 'poutcome: MIMMI imputation',
+         col = 'skyblue')
+barplot(table(mice.output$poutcome), main = 'poutcome: MICE Output',
+        col = 'lightblue')
+
+# Plot the distribution in the original data
+
+barplot(table(df$contact), main = 'contact: Original Data',
+        col = 'skyblue')
+# Plot the distribution in the imputed data
+barplot(table(df_imp_rf$contact), main = 'contact: Random Forest imputation',
+        col = 'skyblue')
+barplot(table(df_imp_mimmi$imputedData$contact), main = 'contact: MIMMI imputation',
+         col = 'skyblue')
+barplot(table(mice.output$contact), main = 'contact: MICE Output',
+        col = 'lightblue')
+
+par(mfrow=c(1,1))
+```
+
+
+Compare in absolute numbers the counts of each value before and after imputation
+```{r}
+print("pdays")
+print("Original:")
+summary(df$pdays)
+print("KNN:")
+summary(df_imp_knn$pdays)
+print("Random Forest:")
+summary(df_imp_rf$pdays)
+print("MIMMI:")
+summary(df_imp_mimmi$imputedData$pdays)
+print("MICE:")
+summary(mice.output$pdays)
+
+print("poutcome")
+print("Original:")
+table(df$poutcome)
+prop.table(table(df$poutcome)) * 100
+print("Random Forest:")
+table(df_imp_rf$poutcome)
+prop.table(table(df_imp_rf$poutcome)) * 100
+print("MIMMI:")
+table(df_imp_mimmi$imputedData$poutcome)
+prop.table(table(df_imp_mimmi$imputedData$poutcome)) * 100
+print("MICE:")
+table(mice.output$poutcome)
+prop.table(table(mice.output$poutcome)) * 100
+
+print("Contact")
+print("Original:")
+table(df$contact)
+prop.table(table(df$contact)) * 100
+print("Random Forest:")
+table(df_imp_rf$contact)
+prop.table(table(df_imp_rf$contact)) * 100
+print("MIMMI:")
+table(df_imp_mimmi$imputedData$contact)
+prop.table(table(df_imp_mimmi$imputedData$contact)) * 100
+print("MICE:")
+table(mice.output$contact)
+prop.table(table(mice.output$contact)) * 100
+```
+
+From plots we observe that for "poutcome" and "contact" MICE barplots patterns are the nearest to the original data. That can be verified with the absolute numbers and the percentages of each distinct value of those two columns. MICE imputed results have the closest percentages of values with the original data. Now when it comes to "pdays" we print the summary and we come to the result that MICE is again the better solution, because quartiles and mean are once again the closest to the original data among the 4 methods.
+
+Thus, we adjust results of MICE for 'contact', 'pdays' and 'poutcome' in our dataframe.
+```{r}
+df$contact = mice.output$contact
+df$pdays = mice.output$pdays
+df$poutcome = mice.output$poutcome
+missing_mean = mean(is.na(df)) ;missing_mean*100  # 0% of mssing values after imputation
+```
+
+
+
+
+```{r}
+df <- read.table("bank.csv",header=T, sep=";");
+attach(df)
+```
+
+Convert all categorical variables to factors
+```{r}
+df$poutcome[df$poutcome == 'unknown'] <- 'none'
+for(i in c(2,3,4,5,7,8,9,11,16,17)) df[,i]<-as.factor(df[,i])
+```
+
+
+ONLY 11 MISSING VALUES IN CONTACT IMPUTATION
+```{r}
+previous_zero = df[df$pdays == -1 & df$previous==0,] ;dim(previous_zero)
+df$contact[df$contact == 'unknown'] <- NA
+```
+
+```{r}
+mice.mod <- mice(df, method = "pmm")
+mice.output <- complete(mice.mod) ;mice.output
+```
+
+
+```{r}
+print("Original:")
+table(df$contact)
+prop.table(table(df$contact)) * 100
+print("MICE:")
+table(mice.output$contact)
+prop.table(table(mice.output$contact)) * 100
+```
+
+From plots we observe that for "poutcome" and "contact" MICE barplots patterns are the nearest to the original data. That can be verified with the absolute numbers and the percentages of each distinct value of those two columns. MICE imputed results have the closest percentages of values with the original data. Now when it comes to "pdays" we print the summary and we come to the result that MICE is again the better solution, because quartiles and mean are once again the closest to the original data among the 4 methods.
+
+```{r}
+df$contact = mice.output$contact
+```
+
+```{r}
+df <- df[names(df)!='pdays']
+```
+
+##############OUTLIERS DETECTION#############
+```{r}
+# DETECTING UNIVARIATE OUTLIERS
+boxplot(df)
+boxplot(df$balance, main = 'Univariate Outliers Detection: balance')
+boxplot.stats(df$balance)$out
+out <- boxplot.stats(df$balance)$out
+out_ind <- which(df$balance %in% c(out))
+out_ind
+W<- data.frame(df[out_ind, ])
+W
+head(W)
+```
+
+```{r}
+# Calculate Mahalanobis Distance
+mdi <- mahalanobis(df_imp_rf[, c("age", "balance", "day", "duration", "campaign")], 
+                   center = apply(df_imp_rf[, c("age", "balance", "day", "duration", "campaign")], 2, mean),
+                   cov = var(df_imp_rf[, c("age", "balance", "day", "duration", "campaign")]))
+
+# Plot the density of Mahalanobis Distance
+plot(density(mdi), main = "Mahalanobis Distance Density")
+
+# Set a cutoff value for outlier detection (e.g., 99th percentile of chi-squared distribution)
+cutoff <- qchisq(p = 0.99, df = ncol(df_imp_rf[, c("age", "balance", "day", "duration", "campaign")]))
+
+# Identify observations whose Mahalanobis Distance is greater than the cutoff
+outliers <- df_imp_rf[mdi > cutoff, c("age", "balance", "day", "duration", "campaign")]
+
+# Display the outliers
+print("Outliers:")
+print(outliers) 
+
+```
+
+```{r}
+# OPTIONAL: Multivariate Outlier Detection with MVN Package
+library(MVN)
+mvnoutliers <- mvn(df_imp_rf[, c("age", "balance", "day", "duration", "campaign")], multivariateOutlierMethod = "adj", 
+                   showOutliers = TRUE, showNewData = TRUE)
+mvnoutliers$multivariateOutliers
+
+```
+
+```{r}
+# Multivariate Outlier Detection with Chemometrics Package
+library(chemometrics)
+dis <- Moutlier(df_imp_rf[, c("age", "balance", "day", "duration", "campaign")], quantile = 0.99, plot = TRUE)
+plot(dis$md, dis$rd, type = "n")
+text(dis$md, dis$rd, labels = rownames(df_imp_rf))
+a <- which(dis$rd > 50)
+```
+
+```{r}
+# Multivariate Outlier Detection with Local Outlier Factor (LOF)
+library(Rlof)
+
+# Compute LOF scores with k=5 (similar to the reference code)
+outlier.scores <- lof(df_imp_rf[, c("age", "balance", "day", "duration", "campaign")], k = 5)
+
+# Specify a threshold for identifying outliers
+threshold <- 2.0  # You can adjust this threshold based on your specific criteria
+
+# Visualize outliers on scatter plots (similar to reference code)
+par(mfrow = c(1, 3))  # Create a 1x3 grid of plots
+
+# Scatter Plot of Age vs. Balance
+plot(df_imp_rf$age, df_imp_rf$balance, main = 'Age vs. Balance')
+points(df_imp_rf$age[outlier.scores > threshold], df_imp_rf$balance[outlier.scores > threshold], pch = 19, col = 'red')
+
+# Scatter Plot of Day vs. Duration
+plot(df_imp_rf$day, df_imp_rf$duration, main = 'Day vs. Duration')
+points(df_imp_rf$day[outlier.scores > threshold], df_imp_rf$duration[outlier.scores > threshold], pch = 19, col = 'red')
+
+# Scatter Plot of Campaign vs. Age
+plot(df_imp_rf$campaign, df_imp_rf$age, main = 'Campaign vs. Age')
+points(df_imp_rf$campaign[outlier.scores > threshold], df_imp_rf$age[outlier.scores > threshold], pch = 19, col = 'red')
+
+# Identify the top outliers
+top_outliers <- order(outlier.scores, decreasing = TRUE)[1:3]
+
+# Print the LOF scores of the top outliers
+print("Top Outliers LOF Scores:")
+print(outlier.scores[top_outliers])
+
+# Print the corresponding rows of the dataset for the top outliers
+print("Corresponding Rows for Top Outliers:")
+print(df_imp_rf[top_outliers, c("age", "balance", "day", "duration", "campaign")])
+```
+
+
+# Detecting Univariate Outliers and Displaying Them
+```{r}
+# Detecting Univariate Outliers and Displaying Them
+univariate_outliers <- list()
+variablestocheck <- c("balance", "age", "day", "duration", "campaign")
+
+for (var in variablestocheck) {
+  boxplot(df[[var]], main = paste("Univariate Outliers Detection:", var))
+  # Determine outliers using a threshold (e.g., Tukey's fences)
+  lower_fence <- quantile(df[[var]], 0.25) - 1.5 * IQR(df[[var]])
+  upper_fence <- quantile(df[[var]], 0.75) + 1.5 * IQR(df[[var]])
+  
+  # Identify outliers for the current variable
+  outliers <- df[which(df[[var]] < lower_fence | df[[var]] > upper_fence), ]
+  
+  # Store the outliers in the list
+  univariate_outliers[[var]] <- outliers
+}
+```
+
+
+# Displaying Multivariate Outliers Detected by MVN Package
+```{r}
+# Displaying Multivariate Outliers Detected by MVN Package
+cat("\nMultivariate Outliers Detected by MVN Package:\n")
+if (length(mvnoutliers$multivariateOutliers) > 0) {
+  for (i in 1:length(mvnoutliers$multivariateOutliers)) {
+    cat("Outlier", i, ":\n")
+    print(mvnoutliers$multivariateOutliers[[i]])
+  }
+} else {
+  cat("No multivariate outliers detected by MVN Package.\n")
+}
+
+# Displaying Multivariate Outliers Detected by Chemometrics Package
+cat("\nMultivariate Outliers Detected by Chemometrics Package:")
+cat("\nValues:")
+cat("\n", dis$Outliers, "\n")
+
+# Displaying Multivariate Outliers Detected by LOF
+cat("\nMultivariate Outliers Detected by LOF:")
+cat("\nValues:")
+cat("\n", as.character(df_imp_rf[outlier.scores > threshold, c("age", "balance", "day", "duration", "campaign")]))
+```

@@ -1,0 +1,122 @@
+---
+title: "cart_minsplit_minbucket"
+output: html_document
+date: "2023-11-29"
+---
+```{r}
+rm(list = ls())
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(ROSE)
+```
+
+
+```{r cars}
+df <- read.table("bank_after_cleaning.csv",header=T, sep=",");
+df <- subset(df, select = -1)
+for(i in c(2,3,4,5,7,8,9,11,16,15)) df[,i]<-as.factor(df[,i])
+head(df)
+summary(df)
+```
+```{r}
+set.seed(1234)
+ind <- sample(2, nrow(df), replace = T, prob = c(0.7, 0.3))
+df.train <- df[ind == 1,]
+df.test <- df[ind == 2,]
+```
+
+```{r}
+# ROSE package ovun.sample()
+df.ROSE <- ovun.sample(y~., data = df.train, N = nrow(df.train), p = 0.5)$data
+```
+
+```{r}
+tree <- rpart(y ~., data = df.ROSE)
+tree
+```
+```{r}
+rpart.plot(tree)
+rpart.rules(tree, style = "tall")
+```
+
+```{r}
+# Define a range of values to test
+minsplit_values <- c(3, 5, 7, 10, 12, 15, 20, 30, 50, 100)
+minbucket_values <- c(3, 5, 7, 10, 12, 15, 20, 30, 50, 100)
+maxdepth_values <- c(3, 5, 7, 10, 12, 15, 20, 30)
+
+# Create an empty list to store results
+results_train <- list()
+results_test <- list()
+
+# Loop over combinations of minsplit and minbucket
+for (maxdepth_val in maxdepth_values) {
+  for (minsplit_val in minsplit_values) {
+    for (minbucket_val in minbucket_values) {
+      # Fit the model with the current combination of parameters
+      tree_model <- rpart(y ~ ., data = df.ROSE, method = "class", control = rpart.control(minsplit = minsplit_val, minbucket = minbucket_val, maxdepth = maxdepth_val))
+      #rpart.plot(tree_model)
+      #print(rpart.rules(tree_model, style = "tall"))
+      # Make predictions
+      predictions <- predict(tree_model, df.ROSE, type = 'class')
+      
+      # Evaluate the model and store results
+      confusion_matrix <- confusionMatrix(predictions, df.ROSE$y, positive = "yes")
+      
+      results_train[[paste("maxdepth", maxdepth_val,"minsplit", minsplit_val, "minbucket", minbucket_val)]] <- list(Accuracy = confusion_matrix$overall["Accuracy"],
+        Sensitivity = confusion_matrix$byClass["Sensitivity"],
+        Specificity = confusion_matrix$byClass["Specificity"],
+        Pos_Pred_Value = confusion_matrix$byClass["Pos Pred Value"],
+        Neg_Pred_Value = confusion_matrix$byClass["Neg Pred Value"])
+      
+      
+      predictions_t <- predict(tree_model,df.test, type = 'class')
+      
+      # Evaluate the model and store results
+      confusion_matrix_t <- confusionMatrix(predictions_t, df.test$y, positive = "yes")
+      
+      results_test[[paste("maxdepth", maxdepth_val, "minsplit", minsplit_val, "minbucket", minbucket_val)]] <- list(Accuracy = confusion_matrix_t$overall["Accuracy"],
+        Sensitivity = confusion_matrix_t$byClass["Sensitivity"],
+        Specificity = confusion_matrix_t$byClass["Specificity"],
+        Pos_Pred_Value = confusion_matrix_t$byClass["Pos Pred Value"],
+        Neg_Pred_Value = confusion_matrix_t$byClass["Neg Pred Value"])
+    }
+  }
+}
+
+# Display results
+#results_test
+```
+
+
+```{r}
+# Extract the names and accuracy values from the results
+result_names <- names(results_test)
+sensitivity_values <- sapply(results_test, function(x) x$Sensitivity)
+
+# Sort by accuracy
+sorted_indices <- order(sensitivity_values, decreasing = TRUE)
+sorted_results <- results_test[result_names[sorted_indices]]
+sorted_results_train <- results_train[result_names[sorted_indices]]
+
+# Print sorted results by accuracy
+print("Sorted by Sensitivity:")
+print(head(sorted_results))
+print("TRAIN:")
+print(head(sorted_results_train))
+```
+
+
+```{r}
+###Evaluation
+#Confusion matrix -train
+
+p <- predict(tree, df.ROSE, type = 'class')
+#Please make sure you mention positive classes in the confusion matrix.
+confusionMatrix(p, df.ROSE$y, positive="yes")
+
+p2 <- predict(tree, test, type = 'class')
+confusionMatrix(p2, test$y, positive="yes")
+```
+
